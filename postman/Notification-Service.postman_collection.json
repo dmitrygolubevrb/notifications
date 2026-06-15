@@ -1,0 +1,1041 @@
+{
+	"info": {
+		"_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+		"name": "Сервис уведомлений",
+		"description": "API микросервиса уведомлений (Laravel).\n\n## Как начать\n\n1. Запусти проект: `docker compose up -d`\n   — контейнер `app` сам накатит миграции и сгенерирует токен (см. `docker/setup/entrypoint.sh`)\n2. Дождись, пока сервис станет healthy: `docker compose ps`\n3. Открой `.env` и скопируй значение `POSTMAN_API_TOKEN` в переменную коллекции **token**\n4. Запусти папку **«Полный сценарий»** по порядку, начиная с шага 0\n\nВоркер очереди стартует автоматически. Если уведомления не обрабатываются: `docker compose logs -f worker`\n\n## Переменные коллекции\n\n| Переменная | Значение по умолчанию | Зачем нужна |\n|------------|----------------------|-------------|\n| `baseUrl` | `http://localhost:8000/api/v1` | Адрес API |\n| `token` | *(пусто)* | Токен авторизации из `.env` |\n| `subscriberId` | `user-demo` | Внешний ID подписчика |\n| `idempotencyKey` | *(авто)* | Ключ идемпотентности для POST-запросов |\n| `fixedIdempotencyKey` | `postman-idempotency-demo` | Фиксированный ключ для теста идемпотентности |\n",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{
+				"key": "token",
+				"value": "{{token}}",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"if (!pm.collectionVariables.get('idempotencyKey')) {",
+					"    pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));",
+					"}"
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8000/api/v1"
+		},
+		{
+			"key": "token",
+			"value": ""
+		},
+		{
+			"key": "subscriberId",
+			"value": "user-demo"
+		},
+		{
+			"key": "idempotencyKey",
+			"value": ""
+		},
+		{
+			"key": "fixedIdempotencyKey",
+			"value": "postman-idempotency-demo"
+		}
+	],
+	"item": [
+		{
+			"name": "Полный сценарий",
+			"description": "Основной путь проверки: создать подписчика → отправить уведомления → дождаться воркера → проверить статусы.",
+			"item": [
+				{
+					"name": "0. Создать подписчика",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"if (pm.response.code === 201) {",
+									"    pm.test('Статус 201 — подписчик создан', () => {",
+									"        pm.response.to.have.status(201);",
+									"    });",
+									"",
+									"    const body = pm.response.json();",
+									"",
+									"    pm.test('В ответе есть объект subscriber', () => {",
+									"        pm.expect(body).to.have.property('subscriber');",
+									"    });",
+									"",
+									"    pm.collectionVariables.set('subscriberId', body.subscriber.external_id);",
+									"} else {",
+									"    pm.test('Подписчик уже существует — статус 422', () => {",
+									"        pm.response.to.have.status(422);",
+									"    });",
+									"}"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"external_id\": \"{{subscriberId}}\",\n  \"phone\": \"+79001234567\",\n  \"email\": \"demo@example.com\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/subscribers",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"subscribers"
+							]
+						},
+						"description": "Регистрирует нового подписчика в системе.\n\nЕсли подписчик с таким `external_id` уже есть — вернётся **422**. Это нормально: дальнейшие шаги будут работать с уже существующим подписчиком."
+					},
+					"response": []
+				},
+				{
+					"name": "1. Отправить одно SMS (срочное)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 202 — запрос принят', () => {",
+									"    pm.response.to.have.status(202);",
+									"});",
+									"",
+									"const body = pm.response.json();",
+									"",
+									"pm.test('В ответе есть объект notification', () => {",
+									"    pm.expect(body).to.have.property('notification');",
+									"});",
+									"",
+									"pm.test('Статус уведомления — queued (в очереди)', () => {",
+									"    pm.expect(body.notification.status).to.eql('queued');",
+									"});",
+									"",
+									"pm.test('Канал — sms', () => {",
+									"    pm.expect(body.notification.channel).to.eql('sms');",
+									"});",
+									"",
+									"pm.collectionVariables.set('lastNotificationId', String(body.notification.id));"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{idempotencyKey}}",
+								"description": "Уникальный ключ — защита от повторной отправки"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"subscriber_external_id\": \"{{subscriberId}}\",\n  \"channel\": \"sms\",\n  \"priority\": \"transactional\",\n  \"message\": \"Код доступа: 4821\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/notifications",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"notifications"
+							]
+						},
+						"description": "Отправляет одно срочное SMS с наивысшим приоритетом.\n\nУходит в очередь `notifications.high`.\n\n**После ответа подожди 5–10 секунд** и выполни шаг 3 — статус должен смениться на `sent`, затем `delivered`."
+					},
+					"response": []
+				},
+				{
+					"name": "2. Массовая email-рассылка (маркетинг)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 202 — запрос принят', () => {",
+									"    pm.response.to.have.status(202);",
+									"});",
+									"",
+									"const body = pm.response.json();",
+									"",
+									"pm.test('В ответе есть поля пакета рассылки', () => {",
+									"    pm.expect(body).to.have.all.keys('batch_id', 'channel', 'priority', 'message', 'total_count', 'notifications');",
+									"});",
+									"",
+									"pm.test('Количество совпадает с массивом уведомлений', () => {",
+									"    pm.expect(body.notifications).to.be.an('array');",
+									"    pm.expect(body.total_count).to.eql(body.notifications.length);",
+									"});",
+									"",
+									"pm.test('Все уведомления в статусе queued', () => {",
+									"    body.notifications.forEach(n => pm.expect(n.status).to.eql('queued'));",
+									"});",
+									"",
+									"pm.collectionVariables.set('lastBatchId', String(body.batch_id));"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{idempotencyKey}}",
+								"description": "Уникальный ключ — защита от повторной отправки"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"subscriber_external_ids\": [\"{{subscriberId}}\"],\n  \"channel\": \"email\",\n  \"priority\": \"marketing\",\n  \"message\": \"Специальное предложение только для вас!\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/notifications/bulk",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"notifications",
+								"bulk"
+							]
+						},
+						"description": "Массовая рассылка с низким приоритетом.\n\nУходит в очередь `notifications.low`."
+					},
+					"response": []
+				},
+				{
+					"name": "3. Получить все уведомления подписчика",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 200 — успех', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"const body = pm.response.json();",
+									"",
+									"pm.test('Ответ с пагинацией (data, links, meta)', () => {",
+									"    pm.expect(body).to.have.all.keys('data', 'links', 'meta');",
+									"    pm.expect(body.data).to.be.an('array');",
+									"});",
+									"",
+									"pm.test('У каждого уведомления есть нужные поля', () => {",
+									"    if (body.data.length > 0) {",
+									"        const item = body.data[0];",
+									"        pm.expect(item).to.have.all.keys('id', 'status', 'channel', 'message', 'priority', 'created_at');",
+									"    }",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/subscribers/{{subscriberId}}/notifications",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"subscribers",
+								"{{subscriberId}}",
+								"notifications"
+							]
+						},
+						"description": "Возвращает историю уведомлений подписчика.\n\nПосле обработки воркером статус сменится на `delivered`."
+					},
+					"response": []
+				},
+				{
+					"name": "4. Получить только доставленные",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 200 — успех', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"const body = pm.response.json();",
+									"",
+									"pm.test('Все уведомления в статусе delivered', () => {",
+									"    body.data.forEach(n => pm.expect(n.status).to.eql('delivered'));",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/subscribers/{{subscriberId}}/notifications?status=delivered&per_page=20",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"subscribers",
+								"{{subscriberId}}",
+								"notifications"
+							],
+							"query": [
+								{
+									"key": "status",
+									"value": "delivered",
+									"description": "Фильтр: queued | sent | delivered | failed"
+								},
+								{
+									"key": "per_page",
+									"value": "20",
+									"description": "Записей на страницу (1–100, по умолчанию 20)"
+								}
+							]
+						},
+						"description": "Тот же список, но только с доставленными уведомлениями."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Идемпотентность",
+			"description": "Повтор POST-запроса с тем же заголовком `Idempotency-Key` возвращает тот же ответ и не создаёт дубликат в базе.",
+			"item": [
+				{
+					"name": "Первый запрос",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 202 — запрос принят', () => {",
+									"    pm.response.to.have.status(202);",
+									"});",
+									"",
+									"pm.collectionVariables.set('idempotencyFirstResponse', pm.response.text());"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{fixedIdempotencyKey}}",
+								"description": "Фиксированный ключ для проверки идемпотентности"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"subscriber_external_id\": \"{{subscriberId}}\",\n  \"channel\": \"sms\",\n  \"priority\": \"normal\",\n  \"message\": \"Тест идемпотентности\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/notifications",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"notifications"
+							]
+						},
+						"description": "Первый запрос с фиксированным ключом. Сохраняет ответ для сравнения."
+					},
+					"response": []
+				},
+				{
+					"name": "Повтор с тем же ключом",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 202 — запрос принят', () => {",
+									"    pm.response.to.have.status(202);",
+									"});",
+									"",
+									"pm.test('Ответ полностью совпадает с первым запросом', () => {",
+									"    const first = pm.collectionVariables.get('idempotencyFirstResponse');",
+									"    pm.expect(pm.response.text()).to.eql(first);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{fixedIdempotencyKey}}",
+								"description": "Тот же ключ, что и в первом запросе"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"subscriber_external_id\": \"{{subscriberId}}\",\n  \"channel\": \"sms\",\n  \"priority\": \"normal\",\n  \"message\": \"Тест идемпотентности\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/notifications",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"notifications"
+							]
+						},
+						"description": "Запускай **сразу после** «Первый запрос». Тело ответа должно быть идентичным."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Ошибки",
+			"description": "Проверка негативных сценариев: несуществующий подписчик, отсутствие токена, ошибки валидации.",
+			"item": [
+				{
+					"name": "404 — подписчик не найден (одиночная отправка)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 404 — не найдено', () => {",
+									"    pm.response.to.have.status(404);",
+									"});",
+									"",
+									"pm.test('В ответе указан отсутствующий подписчик', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.subscriber_external_ids).to.include('missing-user-404');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{idempotencyKey}}"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"subscriber_external_id\": \"missing-user-404\",\n  \"channel\": \"sms\",\n  \"priority\": \"normal\",\n  \"message\": \"Привет\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/notifications",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"notifications"
+							]
+						},
+						"description": "Отправка уведомления несуществующему подписчику."
+					},
+					"response": []
+				},
+				{
+					"name": "404 — подписчик не найден (массовая рассылка)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 404 — не найдено', () => {",
+									"    pm.response.to.have.status(404);",
+									"});",
+									"",
+									"pm.test('В ответе только отсутствующие ID', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.subscriber_external_ids).to.include('missing-user-404');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{idempotencyKey}}"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"subscriber_external_ids\": [\"{{subscriberId}}\", \"missing-user-404\"],\n  \"channel\": \"email\",\n  \"priority\": \"marketing\",\n  \"message\": \"Массовая рассылка\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/notifications/bulk",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"notifications",
+								"bulk"
+							]
+						},
+						"description": "В списке получателей есть несуществующий подписчик — вся рассылка отклоняется."
+					},
+					"response": []
+				},
+				{
+					"name": "404 — подписчик не найден (список уведомлений)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 404 — не найдено', () => {",
+									"    pm.response.to.have.status(404);",
+									"});",
+									"",
+									"pm.test('В ответе указан отсутствующий подписчик', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.subscriber_external_ids).to.include('missing-user-404');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/subscribers/missing-user-404/notifications",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"subscribers",
+								"missing-user-404",
+								"notifications"
+							]
+						},
+						"description": "Запрос истории для несуществующего подписчика."
+					},
+					"response": []
+				},
+				{
+					"name": "422 — нет заголовка Idempotency-Key",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 422 — ошибка валидации', () => {",
+									"    pm.response.to.have.status(422);",
+									"});",
+									"",
+									"pm.test('Ошибка по полю idempotency_key', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.errors).to.have.property('idempotency_key');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"subscriber_external_id\": \"{{subscriberId}}\",\n  \"channel\": \"sms\",\n  \"priority\": \"normal\",\n  \"message\": \"Без ключа идемпотентности\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/notifications",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"notifications"
+							]
+						},
+						"description": "POST без заголовка `Idempotency-Key` — сервер вернёт 422."
+					},
+					"response": []
+				},
+				{
+					"name": "401 — нет токена авторизации",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 401 — не авторизован', () => {",
+									"    pm.response.to.have.status(401);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{baseUrl}}/subscribers/{{subscriberId}}/notifications",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"subscribers",
+								"{{subscriberId}}",
+								"notifications"
+							]
+						},
+						"description": "Запрос без Bearer-токена — сервер вернёт 401."
+					},
+					"response": []
+				},
+				{
+					"name": "422 — подписчик уже существует",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 422 — ошибка валидации', () => {",
+									"    pm.response.to.have.status(422);",
+									"});",
+									"",
+									"pm.test('Ошибка по полю external_id', () => {",
+									"    const body = pm.response.json();",
+									"    pm.expect(body.errors).to.have.property('external_id');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"external_id\": \"{{subscriberId}}\",\n  \"phone\": \"+79001234567\",\n  \"email\": \"demo@example.com\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/subscribers",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"subscribers"
+							]
+						},
+						"description": "Повторное создание подписчика с тем же `external_id`."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Приоритеты",
+			"description": "Примеры отправки для каждого уровня приоритета и соответствующей очереди RabbitMQ.",
+			"item": [
+				{
+					"name": "Транзакционный — очередь notifications.high",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 202 — запрос принят', () => pm.response.to.have.status(202));",
+									"pm.test('Приоритет — transactional', () => {",
+									"    pm.expect(pm.response.json().notification.priority).to.eql('transactional');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{idempotencyKey}}"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"subscriber_external_id\": \"{{subscriberId}}\",\n  \"channel\": \"sms\",\n  \"priority\": \"transactional\",\n  \"message\": \"Срочное уведомление\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/notifications",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"notifications"
+							]
+						},
+						"description": "Критичные сообщения (коды доступа, срочные алерты) — обрабатываются первыми."
+					},
+					"response": []
+				},
+				{
+					"name": "Обычный — очередь notifications",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 202 — запрос принят', () => pm.response.to.have.status(202));",
+									"pm.test('Приоритет — normal', () => {",
+									"    pm.expect(pm.response.json().notification.priority).to.eql('normal');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{idempotencyKey}}"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"subscriber_external_id\": \"{{subscriberId}}\",\n  \"channel\": \"email\",\n  \"priority\": \"normal\",\n  \"message\": \"Обычное уведомление\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/notifications",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"notifications"
+							]
+						},
+						"description": "Стандартный приоритет для обычных уведомлений."
+					},
+					"response": []
+				},
+				{
+					"name": "Маркетинговый — очередь notifications.low",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Статус 202 — запрос принят', () => pm.response.to.have.status(202));",
+									"pm.test('Приоритет — marketing', () => {",
+									"    pm.expect(pm.response.json().notification.priority).to.eql('marketing');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Idempotency-Key",
+								"value": "{{idempotencyKey}}"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"subscriber_external_id\": \"{{subscriberId}}\",\n  \"channel\": \"email\",\n  \"priority\": \"marketing\",\n  \"message\": \"Маркетинговая рассылка\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{baseUrl}}/notifications",
+							"host": [
+								"{{baseUrl}}"
+							],
+							"path": [
+								"notifications"
+							]
+						},
+						"description": "Низкий приоритет — маркетинговые рассылки не блокируют срочные сообщения."
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}

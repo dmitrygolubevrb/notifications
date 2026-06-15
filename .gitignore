@@ -1,0 +1,57 @@
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE / editors
+/.idea
+/.vscode
+/.fleet
+/.nova
+/.zed
+/.phpactor.json
+/.cursor/
+
+# Laravel
+/vendor
+/node_modules
+/public/build
+/public/hot
+/public/storage
+/public/fonts-manifest.dev.json
+/storage/*.key
+/storage/pail
+/bootstrap/cache/*.php
+!bootstrap/cache/.gitignore
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+/auth.json
+
+# Logs & cache
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+/.phpunit.cache
+.phpunit.result.cache
+
+# IDE helpers (generated)
+_ide_helper.php
+_ide_helper_models.php
+.phpstorm.meta.php
+/vendor/_laravel_idea/
+
+# Docker / local runtime data
+/redisdata/
+
+# Homestead
+Homestead.json
+Homestead.yaml
+
+# Misc
+*.swp
+*.swo
+*~
